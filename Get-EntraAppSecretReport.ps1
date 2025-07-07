@@ -107,9 +107,19 @@ foreach ($app in $applications) {
     try {
         $owners = Get-MgApplicationOwner -ApplicationId $app.Id -ErrorAction Stop
         $ownerNames = if ($owners) {
-            $owners | ForEach-Object {
-                if ($_.AdditionalProperties.ContainsKey('userPrincipalName')) { $_.AdditionalProperties.userPrincipalName } elseif ($_.DisplayName) { $_.DisplayName } else { $_.Id }
-            } | Sort-Object | Select-Object -Unique # | -join ', '
+            # Force owners to be an array to handle single-owner case, then join names into a single string
+            $ownerList = @($owners) | ForEach-Object {
+                if ($_.AdditionalProperties.ContainsKey('userPrincipalName')) {
+                    $_.AdditionalProperties.userPrincipalName
+                }
+                elseif ($_.DisplayName) {
+                    $_.DisplayName
+                }
+                else {
+                    $_.Id
+                }
+            }
+            ($ownerList | Sort-Object | Select-Object -Unique) -join ', '
         }
         else {
             'None'

@@ -103,12 +103,29 @@ $thirtyDaysFromNow = $today.AddDays(30)
 $sixMonthsFromNow = $today.AddMonths(6)
 
 foreach ($app in $applications) {
+    # Get owners for the application
+    try {
+        $owners = Get-MgApplicationOwner -ApplicationId $app.Id -ErrorAction Stop
+        $ownerNames = if ($owners) {
+            $owners | ForEach-Object {
+                if ($_.AdditionalProperties.ContainsKey('userPrincipalName')) { $_.AdditionalProperties.userPrincipalName } elseif ($_.DisplayName) { $_.DisplayName } else { $_.Id }
+            } | Sort-Object | Select-Object -Unique # | -join ', '
+        }
+        else {
+            'None'
+        }
+    }
+    catch {
+        $ownerNames = 'Error retrieving owners'
+    }
+
     # Process Password Credentials (Client Secrets)
     foreach ($secret in $app.PasswordCredentials) {
         $endDate = $secret.EndDateTime
         $report.Add([PSCustomObject]@{
                 ApplicationName = $app.DisplayName
                 ApplicationId   = $app.AppId
+                Owners          = $ownerNames
                 CredentialType  = 'Client Secret'
                 CredentialName  = $secret.DisplayName
                 KeyId           = $secret.KeyId
@@ -125,6 +142,7 @@ foreach ($app in $applications) {
         $report.Add([PSCustomObject]@{
                 ApplicationName = $app.DisplayName
                 ApplicationId   = $app.AppId
+                Owners          = $ownerNames
                 CredentialType  = 'Certificate'
                 CredentialName  = $cert.DisplayName
                 KeyId           = $cert.KeyId

@@ -66,9 +66,9 @@ try {
         $filePath = $file.FullName
         try {
             foreach ($pattern in $patterns) {
-                $matches = Select-String -Path $filePath -Pattern $pattern -ErrorAction Stop
-                if ($matches) {
-                    foreach ($match in $matches) {
+                $secretMatches = Select-String -Path $filePath -Pattern $pattern -ErrorAction Stop
+                if ($secretMatches) {
+                    foreach ($match in $secretMatches) {
                         $logEntry = "$filePath`tLine $($match.LineNumber)"
                         Add-Content -Path $LogFile -Value $logEntry
                     }

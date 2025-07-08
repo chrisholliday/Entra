@@ -55,7 +55,6 @@ function Test-GroupExists {
 try {
     Write-Log 'Connecting to Microsoft Graph...'
     Connect-MgGraph -Scopes 'Group.ReadWrite.All', 'User.ReadWrite.All'
-    Select-MgProfile -Name 'beta'
 }
 catch {
     Write-Error "Failed to connect to Microsoft Graph: $_"
@@ -128,7 +127,7 @@ foreach ($group in $groups) {
                 }
             }
             catch {
-                Write-Log "Error adding member $member: $_"
+                Write-Log "Error adding member ${member}: $_"
             }
         }
 
@@ -151,10 +150,10 @@ Groups Skipped: $($summary.GroupsSkipped)
 Total Groups Processed: $($groups.Count)
 
 Detailed Results:
-$($summary.Details | ForEach-Object { "- $_" })
+$($($summary.Details | ForEach-Object { "- $_" }) -join "`r`n")
 
 Errors:
-$($summary.Errors | ForEach-Object { "- $_" })
+$($($summary.Errors | ForEach-Object { "- $_" }) -join "`r`n")
 "@
 
 Set-Content -Path $summaryFile -Value $summaryContent

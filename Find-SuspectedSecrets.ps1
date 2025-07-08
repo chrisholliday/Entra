@@ -22,7 +22,7 @@
 #>
 
 param (
-    [Parameter(Mandatory)]
+    [Parameter(Mandatory=$true)]
     [string]$ScanPath,
 
     [string]$LogFile = "$env:TEMP\suspected_secrets_log.txt"

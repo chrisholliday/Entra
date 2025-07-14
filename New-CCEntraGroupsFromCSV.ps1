@@ -4,7 +4,8 @@
 .DESCRIPTION
     This script reads group information from a specified CSV file and creates non-mail-enabled security groups in Microsoft Entra ID using the Microsoft Graph API.
     It requires a properly formatted CSV file with the following headers: DisplayName, Description, MailNickname, Owners.
-    Optionally, it can assign members to the groups if specified in the CSV.
+    The Owners field must contain one or more Microsoft Entra object IDs (not UPNs or emails), separated by semicolons.
+    Optionally, it can assign members to the groups if specified in the CSV; the Members field must also contain semicolon-separated object IDs.
 
     The script requires the Microsoft.Graph.Identity.DirectoryManagement and Microsoft.Graph.Users modules to be pre-installed.
     If the modules are not present, the script will fail to run.
@@ -14,7 +15,9 @@
     Required Microsoft Graph API permissions: Group.ReadWrite.All, User.Read.All.
 .PARAMETER CsvPath
     The full path to the CSV file containing the group definitions.
-    The CSV must contain the following headers: DisplayName, Description, MailNickname, Owners. It may also include a Members header for group membership.
+    The CSV must contain the following headers: DisplayName, Description, MailNickname, Owners. 
+    The Owners field must contain one or more Microsoft Entra object IDs (semicolon-separated). 
+    It may also include a Members header for group membership, which must also be a semicolon-separated list of object IDs.
 .EXAMPLE
     .\New-CCEntraGroupsFromCSV.ps1 -CsvPath "C:\Users\chris\OneDrive\scripts\Azure\NewGroups.csv"
 
@@ -34,6 +37,19 @@ param (
     [Parameter(Mandatory = $true)]
     [string]$CsvPath
 )
+# Define 
+function Write-Log {
+    param(
+        [string]$Message
+    )
+    Add-Content -Path $logFile -Value $Message
+}
+
+# Set up log file
+$scriptName = [System.IO.Path]::GetFileNameWithoutExtension($MyInvocation.MyCommand.Name)
+$csvBaseName = [System.IO.Path]::GetFileNameWithoutExtension($CsvPath)
+$logFile = Join-Path -Path (Split-Path -Parent $MyInvocation.MyCommand.Path) -ChildPath ("${scriptName}_${csvBaseName}_GroupCreationLog_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
+
 # Ensure the required modules are installed
 $requiredModules = @('Microsoft.Graph.Identity.DirectoryManagement', 'Microsoft.Graph.Users')
 foreach ($module in $requiredModules) {
@@ -46,15 +62,17 @@ foreach ($module in $requiredModules) {
 Import-Module Microsoft.Graph.Identity.DirectoryManagement
 Import-Module Microsoft.Graph.Users
 
+# Define required Microsoft Graph scopes (see .PARAMETER and .NOTES)
+$graphScopes = @('Group.ReadWrite.All', 'User.Read.All')
+
 # Authenticate to Microsoft Graph
 try {
-    Connect-MgGraph -Scopes 'Group.ReadWrite.All', 'User.Read.All'
+    Connect-MgGraph -Scopes $graphScopes
 }
 catch {
     Write-Error 'Failed to connect to Microsoft Graph. Please ensure you have the necessary permissions and try again.'
     throw
 }
-# Read the CSV file
 if (-not (Test-Path $CsvPath)) {
     Write-Error "The specified CSV file '$CsvPath' does not exist."
     throw
@@ -62,16 +80,7 @@ if (-not (Test-Path $CsvPath)) {
 $groups = Import-Csv -Path $CsvPath
 if ($null -eq $groups) {
     Write-Error 'Failed to read the CSV file. Please ensure it is properly formatted.'
-    throw
-}
 
-# Set up log file
-$scriptName = [System.IO.Path]::GetFileNameWithoutExtension($MyInvocation.MyCommand.Name)
-$logFile = Join-Path -Path (Split-Path -Parent $MyInvocation.MyCommand.Path) -ChildPath ("${scriptName}_GroupCreationLog_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
-function Write-Log {
-    param(
-        [string]$Message
-    )
     Add-Content -Path $logFile -Value $Message
 }
 
@@ -83,12 +92,14 @@ foreach ($group in $groups) {
         [string]::IsNullOrWhiteSpace($group.MailNickname) -or 
         [string]::IsNullOrWhiteSpace($group.Owners)) {
         $msg = "[ERROR] Group '$($group.DisplayName)' is missing one or more required fields: DisplayName, Description, MailNickname, or Owners. Skipping group: $($group | ConvertTo-Json -Compress)"
-        Write-Error $msg
+        Write-Host $msg -ForegroundColor Red
         Write-Log $msg
         continue
     }
-    # Check if group already exists by DisplayName or MailNickname
-    $escapedDisplayName = $group.DisplayName -replace "'", "''"
+    $escapedDisplayName = $group.DisplayName -replace '"', '\"'
+    $escapedMailNickname = $group.MailNickname -replace '"', '\"'
+    $filter = "displayName eq `"$escapedDisplayName`" or mailNickname eq `"$escapedMailNickname`""
+    $existingGroup = Get-MgGroup -Filter $filter -ErrorAction SilentlyContinue
     $escapedMailNickname = $group.MailNickname -replace "'", "''"
     $filter = "displayName eq '$escapedDisplayName' or mailNickname eq '$escapedMailNickname'"
     $existingGroup = Get-MgGroup -Filter $filter -ErrorAction SilentlyContinue
@@ -113,50 +124,86 @@ foreach ($group in $groups) {
     }
     catch {
         $msg = "[ERROR] Failed to create group: $($group.DisplayName). Error: $_"
-        Write-Error $msg
+        Write-Host $msg -ForegroundColor Red
         Write-Log $msg
         continue
     }
-    if ($group.Owners) {
-        $ownerIds = $group.Owners -split ';' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-        foreach ($ownerId in $ownerIds) {
-            try {
-                $ownerParams = @{
-                    '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$ownerId"
-                }
-                New-MgGroupOwnerByRef -GroupId $newGroup.Id -BodyParameter $ownerParams
-                $msg = "[SUCCESS] Added owner: $ownerId to group: $($newGroup.DisplayName)"
-                Write-Host $msg
-                Write-Log $msg
-            }
-            catch {
-                $msg = "[WARNING] Failed to add owner: $ownerId to group: $($newGroup.DisplayName). Error: $_"
-                Write-Warning $msg
-                Write-Log $msg
-            }
-        }
-    }
 
-}
-# Assign members if specified
-if ($group.Members) {
-    $memberIds = $group.Members -split ';' | ForEach-Object {
-        $_.Trim()
-    } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    foreach ($memberId in $memberIds) {
-        try {
-            $memberParams = @{
-                '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$memberId"
+    # Only proceed if the group was created successfully
+    if ($null -ne $newGroup) {
+        if ($group.Owners) {
+            $ownerIds = $group.Owners -split ';' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            foreach ($ownerIdentifier in $ownerIds) {
+                try {
+                    # Check if the identifier is a GUID (object ID) or a UPN
+                    $actualOwnerId = $null
+                    if ($ownerIdentifier -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+                        # It's already an object ID
+                        $actualOwnerId = $ownerIdentifier
+                    }
+                    else {
+                        # Assume it's a UPN and resolve to object ID
+                        $user = Get-MgUser -Filter "userPrincipalName eq '$ownerIdentifier'" -ErrorAction Stop
+                        if ($user) {
+                            $actualOwnerId = $user.Id
+                        }
+                        else {
+                            throw "User not found with UPN: $ownerIdentifier"
+                        }
+                    }
+            
+                    $ownerParams = @{
+                        '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$actualOwnerId"
+                    }
+                    New-MgGroupOwnerByRef -GroupId $newGroup.Id -BodyParameter $ownerParams
+                    $msg = "[SUCCESS] Added owner: $ownerIdentifier (ID: $actualOwnerId) to group: $($newGroup.DisplayName)"
+                    Write-Host $msg
+                    Write-Log $msg
+                }
+                catch {
+                    $msg = "[WARNING] Failed to add owner: $ownerIdentifier to group: $($newGroup.DisplayName). Error: $_"
+                    Write-Warning $msg
+                    Write-Log $msg
+                }
             }
-            New-MgGroupMemberByRef -GroupId $newGroup.Id -BodyParameter $memberParams
-            $msg = "[SUCCESS] Added member: $memberId to group: $($newGroup.DisplayName)"
-            Write-Host $msg
-            Write-Log $msg
         }
-        catch {
-            $msg = "[WARNING] Failed to add member: $memberId to group: $($newGroup.DisplayName). Error: $_"
-            Write-Warning $msg
-            Write-Log $msg
+
+        # Assign members if specified
+        if ($group.Members) {
+            $memberIds = $group.Members -split ';' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            foreach ($memberIdentifier in $memberIds) {
+                try {
+                    # Check if the identifier is a GUID (object ID) or a UPN
+                    $actualMemberId = $null
+                    if ($memberIdentifier -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+                        # It's already an object ID
+                        $actualMemberId = $memberIdentifier
+                    }
+                    else {
+                        # Assume it's a UPN and resolve to object ID
+                        $user = Get-MgUser -Filter "userPrincipalName eq '$memberIdentifier'" -ErrorAction Stop
+                        if ($user) {
+                            $actualMemberId = $user.Id
+                        }
+                        else {
+                            throw "User not found with UPN: $memberIdentifier"
+                        }
+                    }
+                    
+                    $memberParams = @{
+                        '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$actualMemberId"
+                    }
+                    New-MgGroupMemberByRef -GroupId $newGroup.Id -BodyParameter $memberParams
+                    $msg = "[SUCCESS] Added member: $memberIdentifier (ID: $actualMemberId) to group: $($newGroup.DisplayName)"
+                    Write-Host $msg
+                    Write-Log $msg
+                }
+                catch {
+                    $msg = "[WARNING] Failed to add member: $memberIdentifier to group: $($newGroup.DisplayName). Error: $_"
+                    Write-Warning $msg
+                    Write-Log $msg
+                }
+            }
         }
     }
 }
